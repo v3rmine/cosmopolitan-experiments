@@ -41,7 +41,7 @@ dist/hello_rust.o: hello_rust.rs
 	mkdir -p dist
 	rustc --emit obj --target=x86_64-unknown-none \
 		-Copt-level=s \
-		-Clinker=$(shell which $(CC)) -Clink-arg=-Wl,-T,$(COSMOPOLITAN_DIR)/ape.lds -Ctarget-feature=+crt-static \
+		-Ctarget-feature=+crt-static \
 		hello_rust.rs -o dist/hello_rust.o
 dist/hello_rust.elf: dist/hello_rust.o
 	$(CC) -g -Os -static -nostdlib -nostdinc -fno-pie -no-pie -mno-red-zone \
@@ -51,6 +51,33 @@ dist/hello_rust.elf: dist/hello_rust.o
 		$(COSMOPOLITAN_DIR)/ape-no-modify-self.o $(COSMOPOLITAN_DIR)/cosmopolitan.a
 dist/hello_rust: dist/hello_rust.elf
 	$(OBJCOPY) -SO binary dist/hello_rust.elf dist/hello_rust
+
+# https://medium.com/@squanderingtime/manually-linking-rust-binaries-to-support-out-of-tree-llvm-passes-8776b1d037a4
+# DEV ONLY x86_64-unknown-linux-musl
+TARGET=x86_64-apple-darwin
+LLVM_HOME:=$(shell if uname -s | grep -q Darwin; then echo /usr/local/Cellar/llvm/$(shell ls /usr/local/Cellar/llvm | head -n1)/bin; else echo UNSUPPORTED; exit 1; fi)
+TOOLCHAIN_LIB:=$(shell rustc --print target-libdir --target=$(TARGET))
+dist/hello_rust_std*.ll: hello_rust_std.rs
+	mkdir -p dist
+	rustc --emit llvm-ir --target=$(TARGET) \
+		-Csave-temps --out-dir dist \
+		-Copt-level=s \
+		-Ctarget-feature=+crt-static \
+		hello_rust_std.rs
+	rm dist/*no-opt*
+dist/hello_rust_std*.bc: dist/hello_rust_std*.ll
+	find dist -name '*.ll' | xargs -n 1 $(LLVM_HOME)/llvm-as
+	find dist -name '*.ll' | rev | cut -c 3- | rev | \
+		xargs -n 1 -I {} $(LLVM_HOME)/opt \
+		-o {}bc {}bc
+dist/hello_rust_std*.o: dist/hello_rust_std*.bc
+	find dist -name '*.ll' | xargs -n 1 $(LLVM_HOME)/llc -filetype=obj
+dist/hello_rust_std: dist/hello_rust_std*.o
+	cc -m64 -L $(TOOLCHAIN_LIB) -L $(HOME)/.rustup/toolchains/stable-$(TARGET)/lib \
+		dist/*.o \
+		-Wl,-dead_strip -nodefaultlibs -lSystem -lresolv -lc -lm \
+		-o dist/hello_rust_std \
+		$(shell find $(TOOLCHAIN_LIB) -name '*.rlib')
 
 clean:
 	rm -rf dist
